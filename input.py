@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 import argparse
 import imp
@@ -172,6 +173,16 @@ def pad(word, max_len, pad_char):
 def word_to_seq(word, char_idx_map):
     return [char_idx_map[l] for l in word]
 
+def seq_to_word(num, char_idx):
+    chars = []
+    for idx in num:
+        char = char_idx[idx]
+        if char == pad_char_id:
+            break
+        chars.append(char)
+
+    return ''.join(chars)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--poems', required=True, type=str, help='Path to poems database')
@@ -243,7 +254,7 @@ if __name__ == '__main__':
                 tbl.append(target_words_len[idx])
 
                 for j in range(num_context):
-                    idx = (i*num_context + j + batch_start) % len(context_words)
+                    idx = (i*num_context + j + batch_start*num_context) % len(context_words)
 
                     cb.append(context_words_numeric[idx])
                     cbl.append(context_words_len[idx])
@@ -259,5 +270,21 @@ if __name__ == '__main__':
             }
 
             cost, attns, _  = sess.run([m.rm_cost, m.rm_attentions, m.rm_train_op], feed_dict=feed_dict)
-            print('{}: cost: {}'.format(step, cost))
             step += 1
+            
+            if step % 10 == 0:
+                max_pos = np.argmax(attns, 1)
+                rhymes = []
+                for idx, word in enumerate(tb):
+                    candidates = []
+                    for i in range(num_context):
+                        candidate = cb[idx*num_context+i]
+                        cword = seq_to_word(candidate, char_idx)
+
+                        if i == max_pos[idx]:
+                            cword = '*{}*'.format(cword)
+                        candidates.append(cword)
+
+                    rhymes.append((seq_to_word(word, char_idx), candidates))
+
+                print('{}: cost: {}, rhymes: {}'.format(step, cost, rhymes[:5]))
