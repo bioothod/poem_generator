@@ -6,6 +6,8 @@ max_grad_norm=5
 num_epochs=100
 output_dir='train'
 save_model=True
+restore_model_step=None
+restore_model_latest=False
 
 char_embedding_dim=150
 

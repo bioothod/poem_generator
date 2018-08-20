@@ -251,6 +251,14 @@ if __name__ == '__main__':
     with tf.Session() as sess:
         sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
 
+        if cf.restore_model_step:
+            model_file = "model-{}.ckpt".format(cf.restore_model_step)
+            saver.restore(sess, os.path.join(cf.output_dir, model_file))
+            logging.info('restored {} step from {}'.format(cf.restore_model_step, model_file))
+        elif cf.restore_model_latest:
+            saver.restore(sess, os.path.join(cf.output_dir, model_file))
+            logging.info('restored latest from {}'.format(model_file))
+
         batch_start = 0
         step = 0
         num_epochs = 0
@@ -309,8 +317,12 @@ if __name__ == '__main__':
 
             if step % 1000 == 0:
                 if cf.save_model:
-                    saver.save(sess, os.path.join(cf.output_dir, "model-{}.ckpt".format(step)))
+                    model_file = "model-{}.ckpt".format(step)
+                    saver.save(sess, os.path.join(cf.output_dir, model_file))
+                    logging.info('saving {} step into {}'.format(step, model_file))
         
         print_stats()
         if cf.save_model:
-            saver.save(sess, os.path.join(cf.output_dir, "model-{}.ckpt".format(step)))
+            model_file = "model-{}.ckpt".format(step)
+            saver.save(sess, os.path.join(cf.output_dir, model_file))
+            logging.info('saving {} step into {}'.format(step, model_file))
