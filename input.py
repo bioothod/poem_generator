@@ -187,7 +187,6 @@ def seq_to_word(num, char_idx):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--poems', required=True, type=str, help='Path to poems database')
     parser.add_argument('--config', default='config.py', type=str, help='Config python file')
 
     FLAGS = parser.parse_args()
@@ -199,7 +198,7 @@ if __name__ == '__main__':
     logging.basicConfig(filename=os.path.join(cf.output_dir, 'train.log'), filemode='a', level=logging.INFO,
             format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%d/%m/%y %H:%M:%S')
 
-    poets = import_poems(FLAGS.poems)
+    poets = import_poems(cf.poems_input_file)
 
     word_dict = defaultdict(int)
     char_dict = defaultdict(int)
@@ -315,7 +314,7 @@ if __name__ == '__main__':
             if step % 100 == 0:
                 print_stats()
 
-            if step % 1000 == 0:
+            if step % cf.save_model_steps == 0:
                 if cf.save_model:
                     model_file = "model-{}.ckpt".format(step)
                     saver.save(sess, os.path.join(cf.output_dir, model_file))
