@@ -1,8 +1,11 @@
 seed=0
 batch_size=32
 keep_prob=0.7
-epoch_size=30
 max_grad_norm=5
+
+num_epochs=100
+output_dir='train'
+save_model=True
 
 char_embedding_dim=150
 

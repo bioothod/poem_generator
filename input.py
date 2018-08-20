@@ -4,6 +4,8 @@ import numpy as np
 import argparse
 import imp
 import json
+import logging
+import os
 import re
 
 from collections import defaultdict
@@ -191,6 +193,12 @@ if __name__ == '__main__':
     FLAGS = parser.parse_args()
     cf = imp.load_source('config', FLAGS.config)
 
+    if not os.path.exists(cf.output_dir):
+        os.makedirs(cf.output_dir)
+
+    logging.basicConfig(filename=os.path.join(cf.output_dir, 'train.log'), filemode='a', level=logging.INFO,
+            format='%(asctime)s.%(msecs)03d: %(message)s', datefmt='%d/%m/%y %H:%M:%S')
+
     poets = import_poems(FLAGS.poems)
 
     word_dict = defaultdict(int)
@@ -237,12 +245,17 @@ if __name__ == '__main__':
     target_words_numeric = [word_to_seq(w, char_idx_map) for w in target_words]
     context_words_numeric = [word_to_seq(w, char_idx_map) for w in context_words]
 
+    if cf.save_model:
+        saver = tf.train.Saver()
+
     with tf.Session() as sess:
         sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
 
         batch_start = 0
         step = 0
-        while True:
+        num_epochs = 0
+
+        while num_epochs < cf.num_epochs:
             tb = []
             tbl = []
             cb = []
@@ -260,6 +273,8 @@ if __name__ == '__main__':
                     cbl.append(context_words_len[idx])
 
             batch_start += cf.batch_size
+            num_epochs = batch_start / len(target_words)
+
             batch_words = tb + cb
             batch_lens = tbl + cbl
 
@@ -271,8 +286,8 @@ if __name__ == '__main__':
 
             cost, attns, _  = sess.run([m.rm_cost, m.rm_attentions, m.rm_train_op], feed_dict=feed_dict)
             step += 1
-            
-            if step % 10 == 0:
+
+            def print_stats():
                 max_pos = np.argmax(attns, 1)
                 rhymes = []
                 for idx, word in enumerate(tb):
@@ -287,4 +302,15 @@ if __name__ == '__main__':
 
                     rhymes.append((seq_to_word(word, char_idx), candidates))
 
-                print('{}: cost: {}, rhymes: {}'.format(step, cost, rhymes[:5]))
+                logging.info('{}: cost: {}, rhymes: {}'.format(step, cost, rhymes[:5]))
+            
+            if step % 100 == 0:
+                print_stats()
+
+            if step % 1000 == 0:
+                if cf.save_model:
+                    saver.save(sess, os.path.join(cf.output_dir, "model-{}.ckpt".format(step)))
+        
+        print_stats()
+        if cf.save_model:
+            saver.save(sess, os.path.join(cf.output_dir, "model-{}.ckpt".format(step)))
