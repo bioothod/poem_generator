@@ -10,7 +10,7 @@ output_dir='train'
 save_model=True
 save_model_steps=10000
 restore_model_step=None
-restore_model_latest=False
+restore_model_latest=True
 
 char_embedding_dim=150
 
