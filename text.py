@@ -177,7 +177,6 @@ def window(seq, n=2):
         result = result[1:] + (elem,)
         yield result
 
-
 def prepare_rhyme_dataset(poets, cf, char_idx_map):
     target_words = []
     target_words_len = []
@@ -251,4 +250,3 @@ def prepare_rhyme_dataset(poets, cf, char_idx_map):
             ret_batch_lens.append(batch_lens)
 
     return ret_batch_words, ret_batch_lens
-
