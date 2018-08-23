@@ -1,5 +1,5 @@
 seed=0
-batch_size=32
+batch_size=128
 keep_prob=0.7
 max_grad_norm=5
 

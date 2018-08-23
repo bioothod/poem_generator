@@ -17,11 +17,32 @@ space_char_id = ' '
 eos_char_id = '\n'
 pad_char_id = '+'
 
+unknown_word_id = '<unknown>'
+
+def pad(word, max_len, pad_char):
+    return word + pad_char*(max_len - len(word))
+
+def word_to_seq(word, char_idx_map):
+    return [char_idx_map[l] for l in word]
+
+def seq_to_word(num, char_idx):
+    chars = []
+    for idx in num:
+        char = char_idx[idx]
+        if char == pad_char_id:
+            break
+        chars.append(char)
+
+    return ''.join(chars)
+
 class Poem(object):
     def __init__(self, title, content):
+        self.encoded_lines = []
+        self.encoded_char_lines = []
+
         self.title = title
         content = content.lower()
-        content = re.sub(r'[^\w\d\n\'`-]+', ' ', content).lower()
+        content = re.sub(r'[^\w\d\n\-\s]+', '', content).lower()
         content = content.split('\n')
         self.content = []
         for l in content:
@@ -49,11 +70,20 @@ class Poem(object):
             yield line
         return None
 
+    def push_encoded_line(self, line):
+        self.encoded_lines.append(line)
+
+    def push_encoded_char_line(self, line):
+        self.encoded_char_lines.append(line)
+
 class Poet(object):
     def __init__(self):
         self.poems = []
         self.words = 0
         self.poet_id = None
+
+        self.word_num = []
+        self.char_num = []
         
     def add_text(self, poet_id, title, content):
         self.poet_id = poet_id
@@ -75,6 +105,33 @@ class Poet(object):
             for line in poem.lines():
                 yield line[-num:]
 
+    def prepare_word_char_batches(self, word_idx_map, char_idx_map):
+        unknown_word_num = word_idx_map[unknown_word_id]
+        eol_num = char_idx_map[eos_char_id]
+        space_num = char_idx_map[space_char_id]
+
+        for poem in self.poems:
+            for line in poem.lines():
+                words = line.split()
+
+                encoded_line = []
+                encoded_char_line = []
+
+                for w in words:
+                    widx = word_idx_map.get(w, unknown_word_num)
+                    encoded_line.append(widx)
+
+                    seq = word_to_seq(w, char_idx_map)
+                    encoded_char_line.append(seq)
+
+                    if w == words[-1]:
+                        encoded_char_line.append(eol_num)
+                    else:
+                        encoded_char_line.append(space_num)
+                
+                poem.push_encoded_line(encoded_line)
+                poem.push_encoded_char_line(encoded_char_line)
+
 def import_poems(path):
     poets = defaultdict(Poet)
 
@@ -90,46 +147,54 @@ def import_poems(path):
     return poets
 
 class Model(object):
-    def __init__(self, config, word_idx, char_idx, char_idx_map):
+    def __init__(self, config, poet_id, poet, word_idx, word_idx_map, char_idx, char_idx_map):
         self.config = config
 
-        self.pentameter = [0,1]*5
-        self.pentameter_len = len(self.pentameter)
+        self.graph = tf.Graph()
 
-        #language model placeholders
-        self.lm_x    = tf.placeholder(tf.int32, [None, None])
-        self.lm_xlen = tf.placeholder(tf.int32, [None])
-        self.lm_y    = tf.placeholder(tf.int32, [None, None])
-        self.lm_hist = tf.placeholder(tf.int32, [None, None])
-        self.lm_hlen = tf.placeholder(tf.int32, [None])
+        self.poet = poet
+        self.poet_id = poet_id
+        self.char_idx_map = char_idx_map
+        self.word_idx_map = word_idx_map
 
-        #pentameter model placeholders
-        self.pm_enc_x    = tf.placeholder(tf.int32, [None, None])
-        self.pm_enc_xlen = tf.placeholder(tf.int32, [None])
-        self.pm_cov_mask = tf.placeholder(tf.float32, [None, None])
+        with self.graph.as_default():
+            self.pentameter = [0,1]*5
+            self.pentameter_len = len(self.pentameter)
 
-        #rhyme model placeholders
-        self.rm_num_context = tf.placeholder(tf.int32)
+            #language model placeholders
+            self.lm_x    = tf.placeholder(tf.int32, [None, None])
+            self.lm_xlen = tf.placeholder(tf.int32, [None])
+            self.lm_y    = tf.placeholder(tf.int32, [None, None])
+            self.lm_hist = tf.placeholder(tf.int32, [None, None])
+            self.lm_hlen = tf.placeholder(tf.int32, [None])
 
-        is_training = True
+            #pentameter model placeholders
+            self.pm_enc_x    = tf.placeholder(tf.int32, [None, None])
+            self.pm_enc_xlen = tf.placeholder(tf.int32, [None])
+            self.pm_cov_mask = tf.placeholder(tf.float32, [None, None])
 
-        ##################
-        #pentameter model#
-        ##################
-        with tf.variable_scope("pentameter_model"):
-            self.init_pentameter(is_training, config.batch_size, len(char_idx), char_idx_map[space_char_id], char_idx_map[pad_char_id])
+            #rhyme model placeholders
+            self.rm_num_context = tf.placeholder(tf.int32)
 
-        ################
-        #language model#
-        ################
-        with tf.variable_scope("language_model"):
-            self.init_language_model(is_training, config.batch_size, len(word_idx))
+            is_training = True
 
-        #############
-        #rhyme model#
-        #############
-        with tf.variable_scope("rhyme_model"):
-            self.init_rhyme(is_training, config.batch_size)
+            ##################
+            #pentameter model#
+            ##################
+            with tf.variable_scope("pentameter_model"):
+                self.init_pentameter(is_training, config.batch_size, len(char_idx), char_idx_map[space_char_id], char_idx_map[pad_char_id])
+
+            ################
+            #language model#
+            ################
+            with tf.variable_scope("language_model"):
+                self.init_language_model(is_training, config.batch_size, len(word_idx))
+
+            #############
+            #rhyme model#
+            #############
+            with tf.variable_scope("rhyme_model"):
+                self.init_rhyme(is_training, config.batch_size)
 
     def get_last_hidden(self, h, xlen):
         ids = tf.range(tf.shape(xlen)[0])
@@ -593,6 +658,92 @@ class Model(object):
         
         self.rm_train_op = tf.train.AdamOptimizer(cf.rm_learning_rate).minimize(self.rm_cost)
 
+    def train(self, rm_batch_words, rm_batch_lens):
+        cf = self.config
+
+        with self.graph.as_default(), tf.Session(graph=self.graph) as sess:
+            if cf.save_model or cf.restore_model_step or cf.restore_model_latest:
+                saver = tf.train.Saver()
+
+            sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
+
+            zero_state  = sess.run(m.lm_initial_state)
+
+            step = 0
+
+            if cf.restore_model_step:
+                model_file = "{}-{}.ckpt".format(self.poet_id, cf.restore_model_step)
+                saver.restore(sess, os.path.join(cf.output_dir, model_file))
+                logging.info('{}: restored {} step from {}'.format(self.poet_id, cf.restore_model_step, model_file))
+                step = cf.restore_model_step
+            elif cf.restore_model_latest:
+                model_file = tf.train.latest_checkpoint(cf.output_dir)
+                if model_file:
+                    saver.restore(sess, model_file)
+                    step = int(model_file.split('/')[-1].split('-')[-1].split('.')[0])
+                    logging.info('{}: restored latest step {} from {}'.format(self.poet_id, step, model_file))
+                else:
+                    logging.info('{}: could not restore latest checkpoint, since it is empty'.format(self.poet_id))
+
+            num_epochs = 0
+
+            rm_batch_idx = 0
+
+            while num_epochs < cf.num_epochs:
+
+                #feed_dict        = {model.pm_enc_x: b[0], model.pm_enc_xlen: b[1], model.pm_cov_mask: b[2]}
+                #cost, attns, _,  = sess.run([model.pm_mean_cost, model.pm_attentions, pm_train_op], feed_dict)
+
+
+                rm_feed_dict = {
+                        self.pm_enc_x: rm_batch_words[rm_batch_idx],
+                        self.pm_enc_xlen: rm_batch_lens[rm_batch_idx],
+                        self.rm_num_context: cf.rm_num_context * 2,
+                }
+                rm_batch_idx += 1
+                if rm_batch_idx == len(rm_batch_words):
+                    rm_batch_idx = 0
+
+                rm_cost, rm_attns, _  = sess.run([self.rm_cost, self.rm_attentions, self.rm_train_op], feed_dict=rm_feed_dict)
+                step += 1
+
+                def print_stats():
+                    max_pos = np.argmax(rm_attns, 1)
+                    rhymes = []
+                    batch = rm_feed_dict[self.pm_enc_x]
+                    tb = batch[:cf.batch_size]
+                    cb = batch[cf.batch_size:]
+                    num_context = cf.rm_num_context * 2
+
+                    for idx, word in enumerate(tb):
+                        candidates = []
+                        for i in range(num_context):
+                            candidate = cb[idx*num_context+i]
+                            cword = seq_to_word(candidate, char_idx)
+
+                            if i == max_pos[idx]:
+                                cword = '*{}*'.format(cword)
+                            candidates.append(cword)
+
+                        rhymes.append((seq_to_word(word, char_idx), candidates))
+
+                    logging.info('{}: cost: {}, rhymes: {}'.format(step, rm_cost, rhymes[:5]))
+                
+                if step % 100 == 0:
+                    print_stats()
+
+                if step % cf.save_model_steps == 0:
+                    if cf.save_model:
+                        model_file = "model-{}.ckpt".format(step)
+                        saver.save(sess, os.path.join(cf.output_dir, model_file))
+                        logging.info('saving {} step into {}'.format(step, model_file))
+            
+            print_stats()
+            if cf.save_model:
+                model_file = "model-{}.ckpt".format(step)
+                saver.save(sess, os.path.join(cf.output_dir, model_file))
+                logging.info('saving {} step into {}'.format(step, model_file))
+
 
 def window(seq, n=2):
     "Returns a sliding window (of width n) over data from the iterable"
@@ -614,22 +765,6 @@ def sound_distance(word1, word2):
 
     distance = sum((ch1 != ch2) for ch1, ch2 in zip(suffix1, suffix2))
     return distance
-
-def pad(word, max_len, pad_char):
-    return word + pad_char*(max_len - len(word))
-
-def word_to_seq(word, char_idx_map):
-    return [char_idx_map[l] for l in word]
-
-def seq_to_word(num, char_idx):
-    chars = []
-    for idx in num:
-        char = char_idx[idx]
-        if char == pad_char_id:
-            break
-        chars.append(char)
-
-    return ''.join(chars)
 
 def prepare_rhyme_dataset(poets, cf, char_idx_map):
     target_words = []
@@ -729,6 +864,8 @@ if __name__ == '__main__':
     char_dict[eos_char_id] += 1
     char_dict[pad_char_id] += 1
 
+    word_dict[unknown_word_id] += 1
+
     word_idx = list(word_dict.keys())
     char_idx = list(char_dict.keys())
 
@@ -736,87 +873,16 @@ if __name__ == '__main__':
     for idx, char in enumerate(char_idx):
         char_idx_map[char] = idx
 
-    m = Model(cf, word_idx, char_idx, char_idx_map)
-
-    if cf.save_model:
-        saver = tf.train.Saver()
+    word_idx_map = {}
+    for idx, word in enumerate(word_idx):
+        word_idx_map[word] = idx
 
     rm_batch_words, rm_batch_lens = prepare_rhyme_dataset(poets, cf, char_idx_map)
 
-    with tf.Session() as sess:
-        sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
+    for poet_id, poet in poets.items():
+        poet.prepare_word_char_batches(word_idx_map, char_idx_map)
 
-        zero_state  = sess.run(m.lm_initial_state)
-
-        if cf.restore_model_step:
-            model_file = "model-{}.ckpt".format(cf.restore_model_step)
-            saver.restore(sess, os.path.join(cf.output_dir, model_file))
-            logging.info('restored {} step from {}'.format(cf.restore_model_step, model_file))
-        elif cf.restore_model_latest:
-            model_file = tf.train.latest_checkpoint(cf.output_dir)
-            if model_file:
-                saver.restore(sess, os.path.join(cf.output_dir, model_file))
-                logging.info('restored latest from {}'.format(model_file))
-            else:
-                logging.info('could not restore latest checkpoint, since it is empty')
-
-        step = 0
-        num_epochs = 0
-
-        rm_batch_idx = 0
-
-        while num_epochs < cf.num_epochs:
+        m = Model(cf, poet_id, poet, word_idx, word_idx_map, char_idx, char_idx_map)
+        m.train(rm_batch_words, rm_batch_lens)
 
 
-            #feed_dict        = {model.pm_enc_x: b[0], model.pm_enc_xlen: b[1], model.pm_cov_mask: b[2]}
-            #cost, attns, _,  = sess.run([model.pm_mean_cost, model.pm_attentions, pm_train_op], feed_dict)
-
-
-            rm_feed_dict = {
-                    m.pm_enc_x: rm_batch_words[rm_batch_idx],
-                    m.pm_enc_xlen: rm_batch_lens[rm_batch_idx],
-                    m.rm_num_context: cf.rm_num_context * 2,
-            }
-            rm_batch_idx += 1
-            if rm_batch_idx == len(rm_batch_words):
-                rm_batch_idx = 0
-
-            rm_cost, rm_attns, _  = sess.run([m.rm_cost, m.rm_attentions, m.rm_train_op], feed_dict=rm_feed_dict)
-            step += 1
-
-            def print_stats():
-                max_pos = np.argmax(rm_attns, 1)
-                rhymes = []
-                batch = rm_feed_dict[m.pm_enc_x]
-                tb = batch[:cf.batch_size]
-                cb = batch[cf.batch_size:]
-                num_context = cf.rm_num_context * 2
-
-                for idx, word in enumerate(tb):
-                    candidates = []
-                    for i in range(num_context):
-                        candidate = cb[idx*num_context+i]
-                        cword = seq_to_word(candidate, char_idx)
-
-                        if i == max_pos[idx]:
-                            cword = '*{}*'.format(cword)
-                        candidates.append(cword)
-
-                    rhymes.append((seq_to_word(word, char_idx), candidates))
-
-                logging.info('{}: cost: {}, rhymes: {}'.format(step, rm_cost, rhymes[:5]))
-            
-            if step % 100 == 0:
-                print_stats()
-
-            if step % cf.save_model_steps == 0:
-                if cf.save_model:
-                    model_file = "model-{}.ckpt".format(step)
-                    saver.save(sess, os.path.join(cf.output_dir, model_file))
-                    logging.info('saving {} step into {}'.format(step, model_file))
-        
-        print_stats()
-        if cf.save_model:
-            model_file = "model-{}.ckpt".format(step)
-            saver.save(sess, os.path.join(cf.output_dir, model_file))
-            logging.info('saving {} step into {}'.format(step, model_file))
