@@ -37,6 +37,7 @@ class Model(object):
             self.pm_enc_x    = tf.placeholder(tf.int32, [None, None])
             self.pm_enc_xlen = tf.placeholder(tf.int32, [None])
             self.pm_cov_mask = tf.placeholder(tf.float32, [None, None])
+            self.pm_enc_xlen_max = tf.placeholder(tf.int32)
 
             #rhyme model placeholders
             self.rm_num_context = tf.placeholder(tf.int32)
@@ -183,7 +184,7 @@ class Model(object):
     def compute_pm_loss(self, is_training, batch_size, enc_hiddens, dec_cell, space_id, pad_id):
         cf             = self.config
 
-        xlen_max       = tf.reduce_max(self.pm_enc_xlen)
+        xlen_max       = self.pm_enc_xlen_max
 
         #use decoder hidden states to select encoder hidden states to predict stress for next time step
         repeat_loss    = tf.zeros([batch_size])
@@ -526,6 +527,8 @@ class Model(object):
     def train(self, rm_batch_words, rm_batch_lens):
         cf = self.config
 
+        pm_batch_words, pm_batch_lens, pm_batch_masks = self.poet.generate_pentameter_batches(cf.batch_size)
+
         with self.graph.as_default(), tf.Session(graph=self.graph) as sess:
             if cf.save_model or cf.restore_model_step or cf.restore_model_latest:
                 saver = tf.train.Saver()
@@ -553,11 +556,25 @@ class Model(object):
             num_epochs = 0
 
             rm_batch_idx = 0
+            pm_batch_idx = 0
 
             while num_epochs < cf.num_epochs:
+                logging.debug('pm: batch: {}, lens: {}, mask: {}'.format(
+                    np.array(pm_batch_words[pm_batch_idx]).shape,
+                    np.array(pm_batch_lens[pm_batch_idx]).shape,
+                    np.array(pm_batch_masks[pm_batch_idx]).shape))
+                logging.debug('rm: batch: {}, lens: {}, num_context: {}'.format(
+                    np.array(rm_batch_words[rm_batch_idx]).shape,
+                    np.array(rm_batch_lens[rm_batch_idx]).shape,
+                    cf.rm_num_context*2))
 
-                #feed_dict        = {model.pm_enc_x: b[0], model.pm_enc_xlen: b[1], model.pm_cov_mask: b[2]}
-                #cost, attns, _,  = sess.run([model.pm_mean_cost, model.pm_attentions, pm_train_op], feed_dict)
+                pm_feed_dict = {
+                    self.pm_enc_x: pm_batch_words[pm_batch_idx],
+                    self.pm_enc_xlen: pm_batch_lens[pm_batch_idx],
+                    self.pm_cov_mask: pm_batch_masks[pm_batch_idx],
+                    self.pm_enc_xlen_max: self.poet.max_word_len,
+                }
+                pm_cost, pm_attns, _,  = sess.run([self.pm_mean_cost, self.pm_attentions, self.pm_train_op], feed_dict=pm_feed_dict)
 
 
                 rm_feed_dict = {
@@ -565,10 +582,6 @@ class Model(object):
                         self.pm_enc_xlen: rm_batch_lens[rm_batch_idx],
                         self.rm_num_context: cf.rm_num_context * 2,
                 }
-                rm_batch_idx += 1
-                if rm_batch_idx == len(rm_batch_words):
-                    rm_batch_idx = 0
-
                 rm_cost, rm_attns, _  = sess.run([self.rm_cost, self.rm_attentions, self.rm_train_op], feed_dict=rm_feed_dict)
                 step += 1
 
@@ -592,7 +605,7 @@ class Model(object):
 
                         rhymes.append((seq_to_word(word, self.char_idx), candidates))
 
-                    logging.info('{}: cost: {}, rhymes: {}'.format(step, rm_cost, rhymes[:5]))
+                    logging.info('{}: pm_cost: {}, rm_cost: {}, rhymes: {}'.format(step, pm_cost, rm_cost, rhymes[:5]))
                 
                 if step % 100 == 0:
                     print_stats()
@@ -602,6 +615,15 @@ class Model(object):
                         model_file = "model-{}.ckpt".format(step)
                         saver.save(sess, os.path.join(cf.output_dir, model_file))
                         logging.info('saving {} step into {}'.format(step, model_file))
+
+                rm_batch_idx += 1
+                if rm_batch_idx == len(rm_batch_words):
+                    rm_batch_idx = 0
+
+                pm_batch_idx += 1
+                if pm_batch_idx == len(pm_batch_words):
+                    pm_batch_idx = 0
+
             
             print_stats()
             if cf.save_model:

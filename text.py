@@ -3,15 +3,22 @@ import logging
 import re
 import random
 
+import numpy as np
+
 from collections import defaultdict
 from collections import deque
 from itertools import islice
 
+# no vowels in these char/word placeholders
 space_char_id = ' '
 eos_char_id = '\n'
 pad_char_id = '+'
 
-unknown_word_id = '<unknown>'
+unknown_word_id = '<nkn>'
+eol_word_id = '<l>'
+pad_word_id = pad_char_id*5
+
+vowels = set([l for l in 'aeiouауеэоаыяию'])
 
 def pad(word, max_len, pad_char):
     return word + pad_char*(max_len - len(word))
@@ -29,6 +36,8 @@ def seq_to_word(num, char_idx):
 
     return ''.join(chars)
 
+def vowels_mask(word):
+    return [float(c in vowels) for c in word]
 
 class Poem(object):
     def __init__(self, title, content):
@@ -45,17 +54,17 @@ class Poem(object):
             if len(l) == 0:
                 continue
 
+            if len(l) > 100:
+                continue
+
             self.content.append(l)
 
-    def collect_stats(self, word_dict, char_dict):
+    def collect_word_stats(self, word_dict):
         for content in self.content:
             for word in content.split():
                 word_dict[word] += 1
 
-                for char in word:
-                    char_dict[char] += 1
-
-        return word_dict, char_dict
+        return word_dict
 
     def random_line(self):
         return random.choice(self.content)
@@ -65,11 +74,38 @@ class Poem(object):
             yield line
         return None
 
-    def push_encoded_line(self, line):
-        self.encoded_lines.append(line)
+    def push_encoded_line(self, line, line_len):
+        self.encoded_lines.append((line, line_len))
 
-    def push_encoded_char_line(self, line):
-        self.encoded_char_lines.append(line)
+    def push_encoded_char_line(self, chars, vowels_mask, word_lens):
+        self.encoded_char_lines.append((chars, vowels_mask, word_lens))
+
+    def generate_pentameter_batches(self, batch_size):
+        batch_words = []
+        batch_lens = []
+        batch_masks = []
+
+        flat_words = []
+        flat_lens = []
+        flat_masks = []
+
+        for char_line, vmask, lens in self.encoded_char_lines:
+            flat_words += char_line
+            flat_lens += lens
+            flat_masks += vmask
+
+        for w in window(flat_words, batch_size):
+            batch_words.append(w)
+        for l in window(flat_lens, batch_size):
+            batch_lens.append(l)
+        for m in window(flat_masks, batch_size):
+            batch_masks.append(m)
+
+        #logging.info('flat_words: {}, flat_lens: {}, flat_masks: {}'.format(
+        #    np.array(flat_words).shape, np.array(flat_lens).shape, np.array(flat_masks).shape))
+
+        #logging.info('batches: {}, lens: {}, masks: {}'.format(np.array(batch_words).shape, np.array(batch_lens).shape, np.array(batch_masks).shape))
+        return batch_words, batch_lens, batch_masks
 
 class Poet(object):
     def __init__(self):
@@ -83,13 +119,16 @@ class Poet(object):
     def add_text(self, poet_id, title, content):
         self.poet_id = poet_id
 
+        if title == "Песни западных славян":
+            return
+
         self.poems.append(Poem(title, content))
 
-    def collect_stats(self, word_dict, char_dict):
+    def collect_word_stats(self, word_dict):
         for poem in self.poems:
-            word_dict, char_dict = poem.collect_stats(word_dict, char_dict)
+            word_dict = poem.collect_word_stats(word_dict)
 
-        return word_dict, char_dict
+        return word_dict
 
     def random_word(self):
         line = random.choice(self.poems).random_line()
@@ -100,32 +139,93 @@ class Poet(object):
             for line in poem.lines():
                 yield line[-num:]
 
+    def pad_params(self):
+        max_words = 0
+        max_word_len = 0
+        max_len_str = None
+
+        for poem in self.poems:
+            for line in poem.lines():
+                words = line.split()
+                if len(words) > max_words:
+                    max_words = len(words)
+                    max_len_str = ' '.join(words)
+
+                for w in words:
+                    if len(w) > max_word_len:
+                        max_word_len = len(w)
+                        max_word = w
+
+        logging.info('{}: the longest string: "{}", the longest word: "{}"'.format(self.poet_id, max_len_str, max_word))
+        self.max_word_len = max_word_len
+        return max_words, max_word_len
+
     def prepare_word_char_batches(self, word_idx_map, char_idx_map):
-        unknown_word_num = word_idx_map[unknown_word_id]
-        eol_num = char_idx_map[eos_char_id]
-        space_num = char_idx_map[space_char_id]
+        pad_word_enc = word_idx_map[pad_word_id]
+        unknown_word_enc = word_idx_map[unknown_word_id]
+        eol_word_enc = word_idx_map[eol_word_id]
+
+        eol_char_enc = char_idx_map[eos_char_id]
+        space_char_enc = char_idx_map[space_char_id]
+        pad_char_enc = char_idx_map[pad_char_id]
+
+        max_words, max_word_len = self.pad_params()
+        logging.info('{}: max_words: {}, max_word_len: {}'.format(self.poet_id, max_words, max_word_len))
+
+        encoded_lines_num = 0
 
         for poem in self.poems:
             for line in poem.lines():
                 words = line.split()
 
                 encoded_line = []
+
                 encoded_char_line = []
+                vowels_mask_line = []
+                word_lens = []
+
+                line_len = len(words)
+
+                words = pad(words, max_words, [pad_word_id]) + [eol_word_id]
+                encoded_line = [word_idx_map.get(w, unknown_word_enc) for w in words]
 
                 for w in words:
-                    widx = word_idx_map.get(w, unknown_word_num)
-                    encoded_line.append(widx)
+                    if w == pad_word_id or w == eol_word_id:
+                        word_lens.append(0)
+                    else:
+                        word_lens.append(len(w))
 
-                    seq = word_to_seq(w, char_idx_map)
+                    wpad = pad(w, max_word_len, pad_char_id)
+
+                    vmask = vowels_mask(wpad)
+                    vowels_mask_line.append(vmask)
+
+                    seq = word_to_seq(wpad, char_idx_map)
                     encoded_char_line.append(seq)
 
-                    if w == words[-1]:
-                        encoded_char_line.append(eol_num)
-                    else:
-                        encoded_char_line.append(space_num)
-                
-                poem.push_encoded_line(encoded_line)
-                poem.push_encoded_char_line(encoded_char_line)
+                poem.push_encoded_line(encoded_line, line_len)
+                poem.push_encoded_char_line(encoded_char_line, vowels_mask_line, word_lens)
+                encoded_lines_num += 1
+
+        logging.info('{}: encoded lines: {}'.format(self.poet_id, encoded_lines_num))
+
+    def generate_pentameter_batches(self, batch_size):
+        poems = self.poems
+        random.shuffle(poems)
+
+        batch_words = []
+        batch_lens = []
+        batch_masks = []
+
+        for poem in poems:
+            w, l, m = poem.generate_pentameter_batches(batch_size)
+
+            batch_words += w
+            batch_lens += l
+            batch_masks += m
+
+        logging.info('{}: poems: {}, pentameter batches: {}'.format(self.poet_id, len(poems), len(batch_words)))
+        return batch_words, batch_lens, batch_masks
 
 def import_poems(path):
     poets = defaultdict(Poet)
@@ -144,14 +244,23 @@ def import_poems(path):
 def prepare_dicts(poets):
     word_dict = defaultdict(int)
     char_dict = defaultdict(int)
-    for poet_id, poet in poets.items():
-        word_dict, char_dict = poet.collect_stats(word_dict, char_dict)
 
     char_dict[space_char_id] += 1
     char_dict[eos_char_id] += 1
     char_dict[pad_char_id] += 1
 
     word_dict[unknown_word_id] += 1
+    word_dict[eol_word_id] += 1
+    word_dict[pad_word_id] += 1
+
+    for poet_id, poet in poets.items():
+        word_dict = poet.collect_word_stats(word_dict)
+
+    for word in word_dict.keys():
+        for char in word:
+            char_dict[char] += 1
+
+    logging.info('poets: {}, words: {}, chars: {}'.format(len(poets), len(word_dict), len(char_dict)))
 
     word_idx = list(word_dict.keys())
     char_idx = list(char_dict.keys())
@@ -249,4 +358,5 @@ def prepare_rhyme_dataset(poets, cf, char_idx_map):
             ret_batch_words.append(batch_words)
             ret_batch_lens.append(batch_lens)
 
+    logging.info('rhyme dataset has been created, batches generated: {}'.format(len(ret_batch_words)))
     return ret_batch_words, ret_batch_lens
