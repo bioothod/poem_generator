@@ -9,6 +9,7 @@ import text
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='config.py', type=str, help='Config python file')
+    parser.add_argument('--poet', type=str, help='Use data for only this poet')
 
     FLAGS = parser.parse_args()
     cf = imp.load_source('config', FLAGS.config)
@@ -26,6 +27,10 @@ if __name__ == '__main__':
     rm_batch_words, rm_batch_lens = text.prepare_rhyme_dataset(poets, cf, char_idx_map)
 
     for poet_id, poet in poets.items():
+        if FLAGS.poet and poet_id != FLAGS.poet:
+            continue
+
+        logging.info('Generating data and training model for poet {}'.format(poet_id))
         poet.prepare_word_char_batches(word_idx_map, char_idx_map)
 
         m = model.Model(cf, poet_id, poet, word_idx, word_idx_map, char_idx, char_idx_map)
