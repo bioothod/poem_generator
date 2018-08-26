@@ -143,6 +143,8 @@ class Poet(object):
         max_words = 0
         max_word_len = 0
         max_len_str = None
+        max_word = None
+        max_word_line = None
 
         for poem in self.poems:
             for line in poem.lines():
@@ -155,8 +157,9 @@ class Poet(object):
                     if len(w) > max_word_len:
                         max_word_len = len(w)
                         max_word = w
+                        max_word_line = line
 
-        logging.info('{}: the longest string: "{}", the longest word: "{}"'.format(self.poet_id, max_len_str, max_word))
+        logging.info('{}: the longest string: "{}", the longest word: "{}", its line: "{}"'.format(self.poet_id, max_len_str, max_word, max_word_line))
         self.max_word_len = max_word_len
         return max_words, max_word_len
 
