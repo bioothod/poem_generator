@@ -27,20 +27,20 @@ class Model(object):
             self.pentameter_len = len(self.pentameter)
 
             #language model placeholders
-            self.lm_x    = tf.placeholder(tf.int32, [None, None])
-            self.lm_xlen = tf.placeholder(tf.int32, [None])
-            self.lm_y    = tf.placeholder(tf.int32, [None, None])
-            self.lm_hist = tf.placeholder(tf.int32, [None, None])
-            self.lm_hlen = tf.placeholder(tf.int32, [None])
+            self.lm_x    = tf.placeholder(tf.int32, [None, None], name='lm_x')
+            self.lm_xlen = tf.placeholder(tf.int32, [None], name='lm_xlen')
+            self.lm_y    = tf.placeholder(tf.int32, [None, None], name='lm_y')
+            self.lm_hist = tf.placeholder(tf.int32, [None, None], name='lm_hist')
+            self.lm_hlen = tf.placeholder(tf.int32, [None], name='lm_hlen')
 
             #pentameter model placeholders
-            self.pm_enc_x    = tf.placeholder(tf.int32, [None, None])
-            self.pm_enc_xlen = tf.placeholder(tf.int32, [None])
-            self.pm_cov_mask = tf.placeholder(tf.float32, [None, None])
-            self.pm_enc_xlen_max = tf.placeholder(tf.int32)
+            self.pm_enc_x    = tf.placeholder(tf.int32, [None, None], name='pm_enc_x')
+            self.pm_enc_xlen = tf.placeholder(tf.int32, [None], name='pm_enc_xlen')
+            self.pm_cov_mask = tf.placeholder(tf.float32, [None, None], name='pm_cov_mask')
+            self.pm_enc_xlen_max = tf.placeholder(tf.int32, name='pm_enc_xlen_max')
 
             #rhyme model placeholders
-            self.rm_num_context = tf.placeholder(tf.int32)
+            self.rm_num_context = tf.placeholder(tf.int32, name='rm_num_context')
 
             is_training = True
 
@@ -341,11 +341,13 @@ class Model(object):
         #concat last hidden state of fw RNN with first hidden state of bw RNN
         fw_hidden = self.get_last_hidden(self.char_encodings[0], self.pm_enc_xlen)
         char_inputs = tf.concat([fw_hidden, self.char_encodings[1][:,0,:]], 1)
+        logging.info('orig char_inputs: {}, pm_enc_dim: {}'.format(char_inputs, cf.pm_enc_dim))
         char_inputs = tf.reshape(char_inputs, [batch_size, -1, cf.pm_enc_dim*2]) #reshape into same dimension as inputs
         
         #concat word and char encodings
-        inputs = tf.concat([word_inputs, char_inputs], 2)
-        #inputs = word_inputs
+        logging.info('word_inputs: {}, char_inputs: {}'.format(word_inputs, char_inputs))
+        #inputs = tf.concat([word_inputs, char_inputs], 2)
+        inputs = word_inputs
 
         #apply mask to zero out pad embeddings
         inputs = inputs * tf.expand_dims(lm_mask, -1)
@@ -529,6 +531,9 @@ class Model(object):
 
         pm_batch_words, pm_batch_lens, pm_batch_masks = self.poet.generate_pentameter_batches(cf.batch_size)
 
+        lm_batch_words, lm_batch_lens, lm_batch_history, lm_batch_hlens, lm_batch_x, lm_batch_y = \
+            self.poet.generate_language_model_batches(cf.batch_size, self.word_idx_map)
+
         with self.graph.as_default(), tf.Session(graph=self.graph) as sess:
             if cf.save_model or cf.restore_model_step or cf.restore_model_latest:
                 saver = tf.train.Saver()
@@ -536,11 +541,12 @@ class Model(object):
             sess.run([tf.global_variables_initializer(), tf.local_variables_initializer()])
 
             zero_state  = sess.run(self.lm_initial_state)
+            model_state = zero_state
 
             step = 0
 
             if cf.restore_model_step:
-                model_file = "{}-{}.ckpt".format(self.poet_id, cf.restore_model_step)
+                model_file = "model-{}-{}.ckpt".format(self.poet_id, cf.restore_model_step)
                 saver.restore(sess, os.path.join(cf.output_dir, model_file))
                 logging.info('{}: restored {} step from {}'.format(self.poet_id, cf.restore_model_step, model_file))
                 step = cf.restore_model_step
@@ -557,6 +563,7 @@ class Model(object):
 
             rm_batch_idx = 0
             pm_batch_idx = 0
+            lm_batch_idx = 0
 
             while num_epochs < cf.num_epochs:
                 logging.debug('pm: batch: {}, lens: {}, mask: {}'.format(
@@ -567,6 +574,32 @@ class Model(object):
                     np.array(rm_batch_words[rm_batch_idx]).shape,
                     np.array(rm_batch_lens[rm_batch_idx]).shape,
                     cf.rm_num_context*2))
+                logging.debug('lm: x: {}, idx: {}'.format(np.array(lm_batch_x).shape, lm_batch_idx))
+                logging.debug('lm: x: {}, y: {}, xlen: {}, history: {}, hlen: {}'.format(
+                    np.array(lm_batch_x[lm_batch_idx]).shape,
+                    np.array(lm_batch_y[lm_batch_idx]).shape,
+                    np.array(lm_batch_lens[lm_batch_idx]).shape,
+                    np.array(lm_batch_history[lm_batch_idx]).shape,
+                    np.array(lm_batch_hlens[lm_batch_idx]).shape,
+                    ))
+
+                lm_feed_dict = {
+                    self.lm_x: lm_batch_x[lm_batch_idx],
+                    self.lm_y: lm_batch_y[lm_batch_idx],
+                    self.lm_xlen: lm_batch_lens[lm_batch_idx],
+
+                    self.pm_enc_x: pm_batch_words[lm_batch_idx], # pentameter model matches language model here
+                    self.pm_enc_xlen: pm_batch_lens[lm_batch_idx],
+                    self.pm_enc_xlen_max: self.poet.max_word_len,
+
+                    self.lm_initial_state: model_state,
+
+                    self.lm_hist: lm_batch_history[lm_batch_idx],
+                    self.lm_hlen: lm_batch_hlens[lm_batch_idx],
+                }
+
+                lm_cost, model_state, lm_attns, _ = sess.run([self.lm_cost, self.lm_final_state, self.lm_attentions, self.lm_train_op],
+                                                                    feed_dict=lm_feed_dict)
 
                 pm_feed_dict = {
                     self.pm_enc_x: pm_batch_words[pm_batch_idx],
@@ -612,7 +645,7 @@ class Model(object):
 
                 if step % cf.save_model_steps == 0:
                     if cf.save_model:
-                        model_file = "model-{}.ckpt".format(step)
+                        model_file = "model-{}-{}.ckpt".format(self.poet.poet_id, step)
                         saver.save(sess, os.path.join(cf.output_dir, model_file))
                         logging.info('saving {} step into {}'.format(step, model_file))
 
@@ -624,9 +657,15 @@ class Model(object):
                 if pm_batch_idx == len(pm_batch_words):
                     pm_batch_idx = 0
 
+                lm_batch_idx += 1
+                if lm_batch_idx == len(lm_batch_x):
+                    lm_batch_idx = 0
+
+                    num_epochs += 1
+
             
             print_stats()
             if cf.save_model:
-                model_file = "model-{}.ckpt".format(step)
+                model_file = "model-{}-{}.ckpt".format(self.poet.poet_id, step)
                 saver.save(sess, os.path.join(cf.output_dir, model_file))
                 logging.info('saving {} step into {}'.format(step, model_file))

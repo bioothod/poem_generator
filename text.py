@@ -107,6 +107,61 @@ class Poem(object):
         #logging.info('batches: {}, lens: {}, masks: {}'.format(np.array(batch_words).shape, np.array(batch_lens).shape, np.array(batch_masks).shape))
         return batch_words, batch_lens, batch_masks
 
+    def generate_lm_batches(self, batch_size, word_idx_map):
+        batch_words = []
+        batch_lens = []
+        batch_history = []
+        batch_hlens = []
+        batch_x = []
+        batch_y = []
+
+        words, lens, history, hlens, x, y = [], [], [], [], [], []
+
+        flat_words = []
+        flat_lens = []
+
+        for w, l in self.encoded_lines:
+            flat_words += w
+            flat_lens.append(l)
+
+        unknown_word_enc = word_idx_map[unknown_word_id]
+        eol_word_enc = word_idx_map[eol_word_id]
+        pad_word_enc = word_idx_map[pad_word_id]
+
+        word_idx = 0
+        for w in window(flat_words, batch_size):
+            words.append(w)
+
+            hist = flat_words[:word_idx]
+            if len(hist) == 0:
+                hist = [unknown_word_enc]
+
+            history.append(hist)
+            hlens.append(len(hist))
+
+            lens.append(len(w))
+
+            x.append(w[:-1] + [eol_word_enc])
+            y.append(w)
+
+            word_idx += 1
+
+            if len(words) == batch_size:
+                hist_max_len = max(hlens)
+                history = [pad(h, hist_max_len, [pad_word_enc]) for h in history]
+
+                batch_words.append(words)
+                batch_lens.append(lens)
+                batch_history.append(history)
+                batch_hlens.append(hlens)
+                batch_x.append(x)
+                batch_y.append(y)
+
+                words, lens, history, hlens, x, y = [], [], [], [], [], []
+
+        #logging.info('x: {}, batch_history: {}'.format(np.array(batch_x).shape, np.array(batch_history).shape))
+        return batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y
+
 class Poet(object):
     def __init__(self):
         self.poems = []
@@ -213,22 +268,35 @@ class Poet(object):
         logging.info('{}: encoded lines: {}'.format(self.poet_id, encoded_lines_num))
 
     def generate_pentameter_batches(self, batch_size):
-        poems = self.poems
-        random.shuffle(poems)
-
         batch_words = []
         batch_lens = []
         batch_masks = []
 
-        for poem in poems:
+        for poem in self.poems:
             w, l, m = poem.generate_pentameter_batches(batch_size)
 
             batch_words += w
             batch_lens += l
             batch_masks += m
 
-        logging.info('{}: poems: {}, pentameter batches: {}'.format(self.poet_id, len(poems), len(batch_words)))
+        logging.info('{}: poems: {}, pentameter batches: {}'.format(self.poet_id, len(self.poems), len(batch_words)))
         return batch_words, batch_lens, batch_masks
+
+    def generate_language_model_batches(self, batch_size, word_idx_map):
+        batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y = [], [], [], [], [], []
+
+        for poem in self.poems:
+            w, bl, h, hl, x, y = poem.generate_lm_batches(batch_size, word_idx_map)
+
+            batch_words += w
+            batch_lens += bl
+            batch_history += h
+            batch_hlens += hl
+            batch_x += x
+            batch_y += y
+
+        logging.info('{}: poems: {}, language model batches: {}/{}'.format(self.poet_id, len(self.poems), len(batch_x), len(batch_words)))
+        return batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y
 
 def import_poems(path):
     poets = defaultdict(Poet)
@@ -282,11 +350,11 @@ def window(seq, n=2):
     "Returns a sliding window (of width n) over data from the iterable"
     "   s -> (s0,s1,...s[n-1]), (s1,s2,...,sn), ...                   "
     it = iter(seq)
-    result = tuple(islice(it, n))
+    result = list(islice(it, n))
     if len(result) == n:
         yield result    
     for elem in it:
-        result = result[1:] + (elem,)
+        result = result[1:] + [elem]
         yield result
 
 def prepare_rhyme_dataset(poets, cf, char_idx_map):
