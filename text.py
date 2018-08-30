@@ -190,6 +190,8 @@ class Poet(object):
 
         if title == "Песни западных славян":
             return
+        if title and 'Из письма к Соболевскому' in title:
+            return
 
         self.poems.append(Poem(title, content))
 
