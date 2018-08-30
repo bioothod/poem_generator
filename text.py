@@ -47,6 +47,7 @@ class Poem(object):
         self.title = title
         content = content.lower()
         content = re.sub(r'[^\w\d\n\-\s]+', '', content).lower()
+        content = re.sub(r'\-', ' ', content)
         content = content.split('\n')
         self.content = []
         for l in content:
@@ -110,57 +111,70 @@ class Poem(object):
     def generate_lm_batches(self, batch_size, word_idx_map):
         batch_words = []
         batch_lens = []
+        batch_chars = []
+        batch_clens = []
+        batch_vmasks = []
         batch_history = []
         batch_hlens = []
         batch_x = []
         batch_y = []
 
-        words, lens, history, hlens, x, y = [], [], [], [], [], []
-
-        flat_words = []
-        flat_lens = []
-
-        for w, l in self.encoded_lines:
-            flat_words += w
-            flat_lens.append(l)
-
         unknown_word_enc = word_idx_map[unknown_word_id]
         eol_word_enc = word_idx_map[eol_word_id]
         pad_word_enc = word_idx_map[pad_word_id]
 
-        word_idx = 0
-        for w in window(flat_words, batch_size):
-            words.append(w)
+        for _ in range(10):
+            words, lens, chars, clens, vmasks, history, hlens, x, y = [], [], [], [], [], [], [], [], []
 
-            hist = flat_words[:word_idx]
-            if len(hist) == 0:
-                hist = [unknown_word_enc]
+            for _ in range(batch_size):
+                line_idx = random.randint(0, len(self.encoded_lines) - 1)
 
-            history.append(hist)
-            hlens.append(len(hist))
+                word_line, word_len = self.encoded_lines[line_idx]
+                char_line, vmask, char_len = self.encoded_char_lines[line_idx]
 
-            lens.append(len(w))
+                seq_idx = random.randint(0, len(word_line) - 1)
 
-            x.append(w[:-1] + [eol_word_enc])
-            y.append(w)
+                hist = []
+                start = 0
+                if line_idx > 4:
+                    start = line_idx - 4
+                for lidx in range(start, line_idx):
+                    w, l = self.encoded_lines[lidx]
+                    hist += w
 
-            word_idx += 1
+                if seq_idx > 0:
+                    hist += word_line[:seq_idx-1]
 
-            if len(words) == batch_size:
-                hist_max_len = max(hlens)
-                history = [pad(h, hist_max_len, [pad_word_enc]) for h in history]
+                if len(hist) == 0:
+                    hist = [unknown_word_enc]
 
-                batch_words.append(words)
-                batch_lens.append(lens)
-                batch_history.append(history)
-                batch_hlens.append(hlens)
-                batch_x.append(x)
-                batch_y.append(y)
+                words.append(word_line)
+                lens.append(word_len)
+                chars += char_line
+                clens += char_len
+                vmasks += vmask
+                history.append(hist)
+                hlens.append(len(hist))
 
-                words, lens, history, hlens, x, y = [], [], [], [], [], []
+                x.append(word_line[:-1] + [eol_word_enc])
+                y.append(word_line)
 
-        #logging.info('x: {}, batch_history: {}'.format(np.array(batch_x).shape, np.array(batch_history).shape))
-        return batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y
+            hist_max_len = max(hlens)
+            history = [pad(h, hist_max_len, [pad_word_enc]) for h in history]
+
+            batch_words.append(words)
+            batch_lens.append(lens)
+            batch_chars.append(chars)
+            batch_clens.append(clens)
+            batch_vmasks.append(vmasks)
+            batch_history.append(history)
+            batch_hlens.append(hlens)
+            batch_x.append(x)
+            batch_y.append(y)
+
+        #logging.info('flat_words: {}, batch_x: {}, batch_history: {}'.format(
+        #    np.array(flat_words).shape, np.array(batch_x).shape, np.array(batch_history).shape))
+        return batch_words, batch_lens, batch_chars, batch_clens, batch_vmasks, batch_history, batch_hlens, batch_x, batch_y
 
 class Poet(object):
     def __init__(self):
@@ -284,19 +298,28 @@ class Poet(object):
 
     def generate_language_model_batches(self, batch_size, word_idx_map):
         batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y = [], [], [], [], [], []
+        batch_chars = []
+        batch_clens = []
+        batch_vmasks = []
 
         for poem in self.poems:
-            w, bl, h, hl, x, y = poem.generate_lm_batches(batch_size, word_idx_map)
+            w, bl, c, cl, v, h, hl, x, y = poem.generate_lm_batches(batch_size, word_idx_map)
 
             batch_words += w
             batch_lens += bl
+
+            batch_chars += c
+            batch_clens += cl
+            batch_vmasks += v
+
             batch_history += h
             batch_hlens += hl
+
             batch_x += x
             batch_y += y
 
         logging.info('{}: poems: {}, language model batches: {}/{}'.format(self.poet_id, len(self.poems), len(batch_x), len(batch_words)))
-        return batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y
+        return batch_words, batch_lens, batch_chars, batch_clens, batch_vmasks, batch_history, batch_hlens, batch_x, batch_y
 
 def import_poems(path):
     poets = defaultdict(Poet)

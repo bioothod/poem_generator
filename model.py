@@ -327,7 +327,6 @@ class Model(object):
 
         #initial states
         self.lm_initial_state = self.lm_dec_cell.zero_state(batch_size, tf.float32)
-        state = self.lm_initial_state
 
         #pad symbol vocab ID = 0; create mask = 1.0 where vocab ID > 0 else 0.0
         lm_mask = tf.cast(tf.greater(self.lm_x, tf.zeros(tf.shape(self.lm_x), dtype=tf.int32)), dtype=tf.float32)
@@ -341,11 +340,11 @@ class Model(object):
         #concat last hidden state of fw RNN with first hidden state of bw RNN
         fw_hidden = self.get_last_hidden(self.char_encodings[0], self.pm_enc_xlen)
         char_inputs = tf.concat([fw_hidden, self.char_encodings[1][:,0,:]], 1)
-        logging.info('orig char_inputs: {}, pm_enc_dim: {}'.format(char_inputs, cf.pm_enc_dim))
+        #logging.info('orig char_inputs: {}, pm_enc_dim: {}'.format(char_inputs, cf.pm_enc_dim))
         char_inputs = tf.reshape(char_inputs, [batch_size, -1, cf.pm_enc_dim*2]) #reshape into same dimension as inputs
         
         #concat word and char encodings
-        logging.info('word_inputs: {}, char_inputs: {}'.format(word_inputs, char_inputs))
+        #logging.info('word_inputs: {}, char_inputs: {}'.format(word_inputs, char_inputs))
         #inputs = tf.concat([word_inputs, char_inputs], 2)
         inputs = word_inputs
 
@@ -353,8 +352,8 @@ class Model(object):
         inputs = inputs * tf.expand_dims(lm_mask, -1)
 
         #dynamic rnn
-        dec_outputs, final_state = tf.nn.dynamic_rnn(self.lm_dec_cell, inputs, sequence_length=self.lm_xlen, \
-            dtype=tf.float32, initial_state=self.lm_initial_state)
+        dec_outputs, final_state = tf.nn.dynamic_rnn(self.lm_dec_cell, inputs, sequence_length=self.lm_xlen,
+                dtype=tf.float32, initial_state=self.lm_initial_state)
         self.lm_final_state = final_state
 
         #########################
@@ -531,7 +530,7 @@ class Model(object):
 
         pm_batch_words, pm_batch_lens, pm_batch_masks = self.poet.generate_pentameter_batches(cf.batch_size)
 
-        lm_batch_words, lm_batch_lens, lm_batch_history, lm_batch_hlens, lm_batch_x, lm_batch_y = \
+        lm_batch_words, lm_batch_lens, lm_batch_chars, lm_batch_clens, lm_batch_vmasks, lm_batch_history, lm_batch_hlens, lm_batch_x, lm_batch_y = \
             self.poet.generate_language_model_batches(cf.batch_size, self.word_idx_map)
 
         with self.graph.as_default(), tf.Session(graph=self.graph) as sess:
@@ -588,8 +587,8 @@ class Model(object):
                     self.lm_y: lm_batch_y[lm_batch_idx],
                     self.lm_xlen: lm_batch_lens[lm_batch_idx],
 
-                    self.pm_enc_x: pm_batch_words[lm_batch_idx], # pentameter model matches language model here
-                    self.pm_enc_xlen: pm_batch_lens[lm_batch_idx],
+                    self.pm_enc_x: lm_batch_chars[lm_batch_idx], # pentameter model matches language model here
+                    self.pm_enc_xlen: lm_batch_clens[lm_batch_idx],
                     self.pm_enc_xlen_max: self.poet.max_word_len,
 
                     self.lm_initial_state: model_state,
