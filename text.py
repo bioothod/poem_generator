@@ -46,6 +46,7 @@ class Poem(object):
 
         self.title = title
         content = content.lower()
+        content = re.sub(r'&#\d+;', '', content)
         content = re.sub(r'[^\w\d\n\-\s]+', '', content).lower()
         content = re.sub(r'\-', ' ', content)
         content = content.split('\n')
@@ -156,7 +157,9 @@ class Poem(object):
                 history.append(hist)
                 hlens.append(len(hist))
 
-                x.append(word_line[:-1] + [eol_word_enc])
+                assert word_line[-1] == eol_word_enc
+
+                x.append(word_line[:-2] + [unknown_word_enc, eol_word_enc])
                 y.append(word_line)
 
             hist_max_len = max(hlens)
@@ -216,6 +219,7 @@ class Poet(object):
         max_len_str = None
         max_word = None
         max_word_line = None
+        max_word_poem = None
 
         for poem in self.poems:
             for line in poem.lines():
@@ -229,8 +233,9 @@ class Poet(object):
                         max_word_len = len(w)
                         max_word = w
                         max_word_line = line
+                        max_word_poem = poem
 
-        logging.info('{}: the longest string: "{}", the longest word: "{}", its line: "{}"'.format(self.poet_id, max_len_str, max_word, max_word_line))
+        logging.info('{}: the longest string: "{}", the longest word: "{}", its line: "{}", title: "{}"'.format(self.poet_id, max_len_str, max_word, max_word_line, max_word_poem.title))
         self.max_word_len = max_word_len
         return max_words, max_word_len
 
@@ -382,7 +387,7 @@ def window(seq, n=2):
         result = result[1:] + [elem]
         yield result
 
-def prepare_rhyme_dataset(poets, cf, char_idx_map):
+def prepare_rhyme_dataset(poets, cf, char_idx_map, batch_size):
     target_words = []
     target_words_len = []
     context_words = []
@@ -434,7 +439,7 @@ def prepare_rhyme_dataset(poets, cf, char_idx_map):
             tbl = []
             cb = []
             cbl = []
-            for i in range(cf.batch_size):
+            for i in range(batch_size):
                 idx = (i + batch_start) % len(target_words)
 
                 tb.append(target_words_numeric[idx])
@@ -446,7 +451,7 @@ def prepare_rhyme_dataset(poets, cf, char_idx_map):
                     cb.append(context_words_numeric[idx])
                     cbl.append(context_words_len[idx])
 
-            batch_start += cf.batch_size
+            batch_start += batch_size
 
             batch_words = tb + cb
             batch_lens = tbl + cbl

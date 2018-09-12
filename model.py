@@ -1,17 +1,26 @@
 import tensorflow as tf
 import numpy as np
 
-import os
 import logging
+import math
+import os
+import random
 
-from text import space_char_id, pad_char_id
-from text import seq_to_word, pad
+from collections import Counter
+
+from nltk.corpus import stopwords as nltk_stopwords
+
+from text import space_char_id, pad_char_id, eos_char_id
+from text import unknown_word_id, eol_word_id, pad_word_id
+from text import word_to_seq, seq_to_word, pad, vowels_mask
 
 class Model(object):
-    def __init__(self, config, poet_id, poet, word_idx, word_idx_map, char_idx, char_idx_map):
+    def __init__(self, config, poet_id, poet, word_idx, word_idx_map, char_idx, char_idx_map, is_training, batch_size):
         self.config = config
 
         self.graph = tf.Graph()
+
+        self.batch_size = batch_size
 
         self.poet = poet
         self.poet_id = poet_id
@@ -42,25 +51,23 @@ class Model(object):
             #rhyme model placeholders
             self.rm_num_context = tf.placeholder(tf.int32, name='rm_num_context')
 
-            is_training = True
-
             ##################
             #pentameter model#
             ##################
             with tf.variable_scope("pentameter_model"):
-                self.init_pentameter(is_training, config.batch_size, len(self.char_idx), char_idx_map[space_char_id], char_idx_map[pad_char_id])
+                self.init_pentameter(is_training, batch_size, len(self.char_idx), char_idx_map[space_char_id], char_idx_map[pad_char_id])
 
             ################
             #language model#
             ################
             with tf.variable_scope("language_model"):
-                self.init_language_model(is_training, config.batch_size, len(word_idx))
+                self.init_language_model(is_training, batch_size, len(word_idx))
 
             #############
             #rhyme model#
             #############
             with tf.variable_scope("rhyme_model"):
-                self.init_rhyme(is_training, config.batch_size)
+                self.init_rhyme(is_training, batch_size)
 
     def get_last_hidden(self, h, xlen):
         ids = tf.range(tf.shape(xlen)[0])
@@ -69,19 +76,18 @@ class Model(object):
 
     # -- sample a word given probability distribution (with option to normalise the distribution with temperature)
     # -- temperature = 0 means argmax
-    def sample_word(self, sess, probs, temperature, unk_symbol_id, pad_symbol_id, wordxchar, idxword,
-        rm_target_pos, rm_target_neg, rm_threshold_pos, avoid_words):
+    def sample_word(self, sess, probs, temperature, rm_target_pos, rm_target_neg, rm_threshold_pos, avoid_words):
+        pad_char_enc = self.char_idx_map[pad_char_id]
 
         def rhyme_pair_to_char(rhyme_pair):
             char_ids, char_id_len = [], []
 
             for word in rhyme_pair:
-                char_ids.append(wordxchar[word])
-                char_id_len.append(len(char_ids[-1]))
+                ids = word_to_seq(word, self.char_idx_map)
+                padded = pad(ids, self.poet.max_word_len, [pad_char_enc])
 
-            #pad char_ids
-            for ci, c in enumerate(char_ids):
-                char_ids[ci] = pad(c, max(char_id_len), pad_symbol_id)
+                char_ids.append(padded)
+                char_id_len.append(len(ids))
 
             return char_ids, char_id_len
 
@@ -93,7 +99,7 @@ class Model(object):
 
             return rm_attns[0][0]
 
-        rm_threshold_neg = 0.7 #non-rhyming words A and B shouldn't have similarity larger than this threshold
+        rm_threshold_neg = 0.7 #non-rhyming words A and B should have similarity less than this threshold
 
         if temperature == 0:
             return np.argmax(probs)
@@ -104,8 +110,6 @@ class Model(object):
 
         #avoid unk_symbol_id if possible
         sampled = None
-        pw      = idxword[rm_target_pos] if rm_target_pos != None else "None"
-        nw      = idxword[rm_target_neg] if rm_target_neg != None else "None"
         for i in range(1000):
             sampled = np.argmax(np.random.multinomial(1, probs, 1))
 
@@ -124,62 +128,75 @@ class Model(object):
 
         return None
 
-
     # -- generate a sentence by sampling one word at a time
-    def sample_sent(self, sess, state, x, hist, hlen, xchar, xchar_len, avoid_symbols, stopwords,temp_min, temp_max,
-        unk_symbol_id, pad_symbol_id, end_symbol_id, space_id, idxchar, charxid, idxword, wordxchar,
+    def sample_sent(self, sess, state, x, hist, hlen, xchar, xchar_len, avoid_symbols, stopwords_enc, temp_min, temp_max,
         rm_target_pos, rm_target_neg, rm_threshold, last_words, max_words):
+
+        eol_word_enc = self.word_idx_map[eol_word_id]
+        pad_word_enc = self.word_idx_map[pad_word_id]
+        unknown_word_enc = self.word_idx_map[unknown_word_id]
 
         def filter_stop_symbol(word_ids):
             cleaned = set([])
             for w in word_ids:
-                if w not in (stopwords | set([pad_symbol_id, end_symbol_id])) and not only_symbol(idxword[w]):
+                if w not in (stopwords_enc | set([pad_word_enc, eol_word_enc])) and not self.word_idx[w].isalpha():
                     cleaned.add(w)
             return cleaned
 
         def get_freq_words(word_ids, freq_threshold):
-            words     = []
+            words = []
             word_freq = Counter(word_ids)
             for k, v in list(word_freq.items()):
-                #if v >= freq_threshold and not only_symbol(idxword[k]) and k != end_symbol_id:
-                if v >= freq_threshold and k != end_symbol_id:
+                if v >= freq_threshold and k != eol_word_enc:
                     words.append(k)
             return set(words)
 
-        sent   = []
+        sent_enc = []
 
         while True:
-            probs, state = sess.run([self.lm_probs, self.lm_final_state],
-                {self.lm_x: x, self.lm_initial_state: state, self.lm_xlen: [1],
-                self.lm_hist: hist, self.lm_hlen: hlen,
-                self.pm_enc_x: xchar, self.pm_enc_xlen: xchar_len})
+            fd = {
+                self.lm_x: x,
+                self.lm_initial_state: state,
+                self.lm_xlen: [1],
 
-            #avoid words previously generated            
-            avoid_words = filter_stop_symbol(sent + hist[0])
-            freq_words  = get_freq_words(sent + hist[0], 2) #avoid any words that occur >= N times
-            avoid_words = avoid_words | freq_words | set(sent[-3:] + last_words + avoid_symbols + [unk_symbol_id])
-            #avoid_words = set(sent[-3:] + last_words + avoid_symbols + [unk_symbol_id])
+                self.lm_hist: hist,
+                self.lm_hlen: hlen,
 
-            word = self.sample_word(sess, probs[0], np.random.uniform(temp_min, temp_max), unk_symbol_id,
-                pad_symbol_id, wordxchar, idxword, rm_target_pos, rm_target_neg, rm_threshold, avoid_words)
+                self.pm_enc_x: xchar,
+                self.pm_enc_xlen: xchar_len,
+            }
+            probs, state = sess.run([self.lm_probs, self.lm_final_state], feed_dict=fd)
 
-            if word != None:
-                sent.append(word)
-                x             = [[ sent[-1] ]]
-                xchar         = [wordxchar[sent[-1]]]
-                xchar_len     = [len(xchar[0])]
-                rm_target_pos = None
-                rm_target_neg = None
-            else:
+
+            # avoid previously generated words
+            avoid_words = filter_stop_symbol(sent_enc + hist[0])
+            freq_words = get_freq_words(sent_enc + hist[0], 2) # avoid any words that occur >= N times
+            avoid_words = avoid_words | freq_words | set(sent_enc[-3:] + last_words + avoid_symbols + [unknown_word_enc])
+
+            word_enc = self.sample_word(sess, probs[0], np.random.uniform(temp_min, temp_max), rm_target_pos, rm_target_neg, rm_threshold, avoid_words)
+
+            if word_enc == None:
                 return None, None, None
 
-            if sent[-1] == end_symbol_id or len(sent) >= max_words:
+            sent_enc.append(word_enc)
 
-                if len(sent) > 1:
-                    pm_loss  = self.eval_pm_loss(sess, sent, end_symbol_id, space_id, idxchar, charxid, idxword, wordxchar)
-                    return sent, state, pm_loss
-                else:
+            word = self.word_idx[word_enc]
+            word_char_enc = word_to_seq(word, self.char_idx_map)
+
+            x = [[ word_enc ]]
+            xchar = [word_char_enc]
+            xchar_len = [len(word_char_enc)]
+
+            rm_target_pos = None
+            rm_target_neg = None
+
+            if word_enc == eol_word_enc or len(sent_enc) >= max_words:
+                if len(sent_enc) == 0:
                     return None, None, None
+
+                pm_loss = 0
+                #pm_loss  = self.eval_pm_loss(sess, sent_enc)
+                return sent_enc, state, pm_loss
 
     def compute_pm_loss(self, is_training, batch_size, enc_hiddens, dec_cell, space_id, pad_id):
         cf             = self.config
@@ -219,10 +236,8 @@ class Model(object):
                     miu     = tf.minimum(tf.sigmoid(tf.matmul(tf.tanh(tf.matmul(tf.concat(
                         [dec_hidden, prev_miu], 1), miu_w) + miu_b), miu_v)) + prev_miu, tf.ones([batch_size, 1]))
                     miu_p   = miu * tf.reshape(tf.cast(self.pm_enc_xlen-1, tf.float32), [-1, 1])
-                    pos     = tf.cast(tf.reshape(tf.tile(tf.range(xlen_max), [batch_size]), [batch_size, -1]),
-                        dtype=tf.float32)
-                    pos_lp  = -(pos - miu_p)**2 / (2 * tf.reshape(tf.tile([tf.square(cf.sigma)], [batch_size]),
-                        [batch_size,-1]))
+                    pos     = tf.cast(tf.reshape(tf.tile(tf.range(xlen_max), [batch_size]), [batch_size, -1]), dtype=tf.float32)
+                    pos_lp  = -(pos - miu_p)**2 / (2 * tf.reshape(tf.tile([tf.square(cf.sigma)], [batch_size]), [batch_size,-1]))
             
                     #char encoding attention
                     pos_weight = tf.reshape(tf.exp(pos_lp), [-1, 1])
@@ -241,8 +256,7 @@ class Model(object):
                     #alpha   = tf.nn.softmax(e + e_mask)
 
                     #weighted sum
-                    c       = tf.reduce_sum(tf.expand_dims(alpha, 2)*tf.reshape(enc_hiddens,
-                        [batch_size, xlen_max, cf.pm_enc_dim*2]), 1)
+                    c       = tf.reduce_sum(tf.expand_dims(alpha, 2)*tf.reshape(enc_hiddens, [batch_size, xlen_max, cf.pm_enc_dim*2]), 1)
 
                     return c, alpha, miu
 
@@ -264,11 +278,9 @@ class Model(object):
         pm_softmax_w = tf.get_variable("pm_softmax_w", [cf.pm_enc_dim*2, 1])
         pm_softmax_b = tf.get_variable("pm_softmax_b", [1], initializer=tf.constant_initializer())
         pm_logit     = tf.squeeze(tf.matmul(outputs, pm_softmax_w) + pm_softmax_b)
-        pm_crossent  = tf.nn.sigmoid_cross_entropy_with_logits(logits=pm_logit,
-            labels=tf.tile(tf.cast(self.pentameter, tf.float32), [batch_size]))
+        pm_crossent  = tf.nn.sigmoid_cross_entropy_with_logits(logits=pm_logit, labels=tf.tile(tf.cast(self.pentameter, tf.float32), [batch_size]))
         cov_loss     = tf.reduce_sum(tf.nn.relu(self.pm_cov_mask*cf.cov_loss_threshold - attentions), 1)
-        pm_cost      = tf.reduce_sum(tf.reshape(pm_crossent, [batch_size, -1]), 1) + \
-            cf.repeat_loss_scale*repeat_loss + cf.cov_loss_scale*cov_loss
+        pm_cost      = tf.reduce_sum(tf.reshape(pm_crossent, [batch_size, -1]), 1) + cf.repeat_loss_scale*repeat_loss + cf.cov_loss_scale*cov_loss
 
         #save some variables
         self.pm_logits     = tf.sigmoid(tf.reshape(pm_logit, [batch_size, -1]))
@@ -352,8 +364,8 @@ class Model(object):
         inputs = inputs * tf.expand_dims(lm_mask, -1)
 
         #dynamic rnn
-        dec_outputs, final_state = tf.nn.dynamic_rnn(self.lm_dec_cell, inputs, sequence_length=self.lm_xlen,
-                dtype=tf.float32, initial_state=self.lm_initial_state)
+        #logging.info('lm_dec_cell: {}, inputs: {}, lm_xlen: {}, lm_initial_state: {}'.format(self.lm_dec_cell, inputs, self.lm_xlen, self.lm_initial_state))
+        dec_outputs, final_state = tf.nn.dynamic_rnn(self.lm_dec_cell, inputs, sequence_length=self.lm_xlen, dtype=tf.float32, initial_state=self.lm_initial_state)
         self.lm_final_state = final_state
 
         #########################
@@ -528,10 +540,10 @@ class Model(object):
     def train(self, rm_batch_words, rm_batch_lens):
         cf = self.config
 
-        pm_batch_words, pm_batch_lens, pm_batch_masks = self.poet.generate_pentameter_batches(cf.batch_size)
+        pm_batch_words, pm_batch_lens, pm_batch_masks = self.poet.generate_pentameter_batches(self.batch_size)
 
         lm_batch_words, lm_batch_lens, lm_batch_chars, lm_batch_clens, lm_batch_vmasks, lm_batch_history, lm_batch_hlens, lm_batch_x, lm_batch_y = \
-            self.poet.generate_language_model_batches(cf.batch_size, self.word_idx_map)
+            self.poet.generate_language_model_batches(self.batch_size, self.word_idx_map)
 
         with self.graph.as_default(), tf.Session(graph=self.graph) as sess:
             if cf.save_model or cf.restore_model_step or cf.restore_model_latest:
@@ -587,7 +599,7 @@ class Model(object):
                     self.lm_y: lm_batch_y[lm_batch_idx],
                     self.lm_xlen: lm_batch_lens[lm_batch_idx],
 
-                    self.pm_enc_x: lm_batch_chars[lm_batch_idx], # pentameter model matches language model here
+                    self.pm_enc_x: lm_batch_chars[lm_batch_idx],
                     self.pm_enc_xlen: lm_batch_clens[lm_batch_idx],
                     self.pm_enc_xlen_max: self.poet.max_word_len,
 
@@ -621,8 +633,8 @@ class Model(object):
                     max_pos = np.argmax(rm_attns, 1)
                     rhymes = []
                     batch = rm_feed_dict[self.pm_enc_x]
-                    tb = batch[:cf.batch_size]
-                    cb = batch[cf.batch_size:]
+                    tb = batch[:self.batch_size]
+                    cb = batch[self.batch_size:]
                     num_context = cf.rm_num_context * 2
 
                     for idx, word in enumerate(tb):
@@ -668,3 +680,117 @@ class Model(object):
                 model_file = "model-{}-{}.ckpt".format(self.poet.poet_id, step)
                 saver.save(sess, os.path.join(cf.output_dir, model_file))
                 logging.info('saving {} step into {}'.format(step, model_file))
+
+    def generate_poem(self, sess):
+        cf = self.config
+
+        eol_word_enc = self.word_idx_map[eol_word_id]
+        pad_word_enc = self.word_idx_map[pad_word_id]
+        unknown_word_enc = self.word_idx_map[unknown_word_id]
+
+        pad_char_enc = self.char_idx_map[pad_char_id]
+        space_char_enc = self.char_idx_map[space_char_id]
+        eos_char_enc = self.char_idx_map[eos_char_id]
+
+        custom_stopwords = ["thee", "thou", "thy", "'d", "'s", "'ll", "must", "shall"]
+
+        avoid_symbols = ["(", ")", "“", "‘", "”", "’", "[", "]"]
+        avoid_symbols = [self.word_idx_map.get(item, unknown_word_enc) for item in avoid_symbols]
+        stopwords = set([self.word_idx_map.get(item, unknown_word_enc) for item in (nltk_stopwords.words("english") + nltk_stopwords.words("russian") + custom_stopwords)])
+
+        def reset():
+            rhyme_aabb  = ([None, 0, None, 2], [None, None, 1, None])
+            rhyme_abab  = ([None, None, 0, 1], [None, 0, None, None])
+            rhyme_abba  = ([None, None, 1, 0], [None, 0, None, None])
+            rhyme_pttn  = random.choice([rhyme_aabb, rhyme_abab, rhyme_abba])
+            state       = sess.run(self.lm_dec_cell.zero_state(1, tf.float32))
+            prev_state  = state
+            x           = [[eol_word_enc]]
+            xchar       = [[eos_char_enc]]
+            xchar_len   = [1]
+            sonnet      = []
+            sent_probs  = []
+            last_words  = []
+            total_words = 0
+            total_lines = 0
+            
+            return state, prev_state, x, xchar, xchar_len, sonnet, sent_probs, last_words, total_words, total_lines, rhyme_pttn[0], rhyme_pttn[1]
+
+        sent_temp = 0.1
+        state, prev_state, x, xchar, xchar_len, sonnet, sent_probs, last_words, total_words, total_lines, rhyme_pttn_pos, rhyme_pttn_neg = reset()
+
+        max_words = 400
+        max_lines = 4
+
+        temp_min = 0.6
+        temp_max = 0.8
+
+        rm_threshold = 0.9
+
+        sample_sentences = 1
+
+        while total_words < max_words and total_lines < max_lines:
+
+            #add history context
+            if len(sonnet) == 0 or sonnet.count(eol_word_enc) < 1:
+                hist = [[unknown_word_enc] + [pad_word_enc]*5]
+            else:
+                hist = [sonnet + [pad_word_enc]*5]
+            hlen = [len(hist[0])]
+
+            #get rhyme targets for the 'first' word
+            rm_target_pos, rm_target_neg = None, None
+            if rhyme_pttn_pos[total_lines] != None:
+                rm_target_pos = last_words[rhyme_pttn_pos[total_lines]]
+            if rhyme_pttn_neg[total_lines] != None:
+                rm_target_neg = last_words[rhyme_pttn_neg[total_lines]]
+
+            #genereate N sentences and sample from them (using softmax(-one_pl) as probability)
+            all_sent, all_state, all_pl = [], [], []
+            for _ in range(sample_sentences):
+                one_sent, one_state, one_pl = self.sample_sent(sess, state, x, hist, hlen, xchar, xchar_len,
+                    avoid_symbols, stopwords, temp_min, temp_max, rm_target_pos, rm_target_neg, rm_threshold, last_words, max_words)
+
+                if one_sent != None:
+                    all_sent.append(one_sent)
+                    all_state.append(one_state)
+                    all_pl.append(-one_pl)
+                else:
+                    all_sent = []
+                    break
+
+            #unable to generate sentences; reset whole quatrain
+            if len(all_sent) == 0:
+                state, prev_state, x, xchar, xchar_len, sonnet, sent_probs, last_words, total_words, total_lines, rhyme_pttn_pos, rhyme_pttn_neg = reset()
+            else:
+                #convert pm_loss to probability using softmax
+                probs = np.exp(np.array(all_pl)/sent_temp)
+                probs = probs.astype(np.float64) #convert to float64 for higher precision
+                probs = probs / math.fsum(probs)
+
+                #sample a sentence
+                sent_id = np.argmax(np.random.multinomial(1, probs, 1))
+                sent    = all_sent[sent_id]
+                state   = all_state[sent_id]
+                pl      = all_pl[sent_id]
+
+                total_words += len(sent)
+                total_lines += 1
+                prev_state   = state
+
+                sonnet += sent
+                sonnet.append(eol_word_enc)
+
+                sent_probs.append(-pl)
+                last_words.append(sent[-1])
+
+        words = []
+        for word_enc in sonnet:
+            if word_enc == eol_word_enc:
+                word = '\n'
+            else:
+                word = self.word_idx[word_enc]
+
+            words.append(word)
+
+        logging.info(' '.join(words))
