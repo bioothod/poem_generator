@@ -46,6 +46,7 @@ class Model(object):
             self.pm_enc_x    = tf.placeholder(tf.int32, [None, None], name='pm_enc_x')
             self.pm_enc_xlen = tf.placeholder(tf.int32, [None], name='pm_enc_xlen')
             self.pm_cov_mask = tf.placeholder(tf.float32, [None, None], name='pm_cov_mask')
+            self.pm_enc_xlen_max = tf.placeholder(tf.int32, name='pm_enc_xlen_max')
 
             #rhyme model placeholders
             self.rm_num_context = tf.placeholder(tf.int32, name='rm_num_context')
@@ -200,7 +201,7 @@ class Model(object):
     def compute_pm_loss(self, is_training, batch_size, enc_hiddens, dec_cell, space_id, pad_id):
         cf             = self.config
 
-        xlen_max       = tf.reduce_max(self.pm_enc_xlen)
+        xlen_max       = self.pm_enc_xlen_max
 
         #use decoder hidden states to select encoder hidden states to predict stress for next time step
         repeat_loss    = tf.zeros([batch_size])
@@ -600,6 +601,7 @@ class Model(object):
 
                     self.pm_enc_x: lm_batch_chars[lm_batch_idx],
                     self.pm_enc_xlen: lm_batch_clens[lm_batch_idx],
+                    self.pm_enc_xlen_max: self.poet.max_word_len,
 
                     self.lm_initial_state: model_state,
 
@@ -614,6 +616,7 @@ class Model(object):
                     self.pm_enc_x: pm_batch_words[pm_batch_idx],
                     self.pm_enc_xlen: pm_batch_lens[pm_batch_idx],
                     self.pm_cov_mask: pm_batch_masks[pm_batch_idx],
+                    self.pm_enc_xlen_max: self.poet.max_word_len,
                 }
                 pm_cost, pm_attns, _,  = sess.run([self.pm_mean_cost, self.pm_attentions, self.pm_train_op], feed_dict=pm_feed_dict)
 
@@ -824,6 +827,7 @@ class Model(object):
             self.pm_enc_x: [pm_chars],
             self.pm_enc_xlen: [len(pm_chars)],
             self.pm_cov_mask: [vmask],
+            self.pm_enc_xlen_max: len(pm_chars),
         }
         pm_attns, pm_costs, logits, mius = sess.run([self.pm_attentions, self.pm_costs, self.pm_logits, self.mius], feed_dict=feed_dict)
 
