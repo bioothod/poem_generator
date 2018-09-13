@@ -157,7 +157,7 @@ class Poem(object):
                 history.append(hist)
                 hlens.append(len(hist))
 
-                x.append([eol_word_enc] + word_line[:-1])
+                x.append(word_line[:-1] + [unknown_word_enc])
                 y.append(word_line)
 
             hist_max_len = max(hlens)
@@ -264,12 +264,12 @@ class Poet(object):
 
                 line_len = len(words)
 
-                words = pad(words, max_words, [pad_word_id]) + [eol_word_id]
+                words = [eol_word_id] + pad(words, max_words, [pad_word_id])
                 encoded_line = [word_idx_map.get(w, unknown_word_enc) for w in words]
 
                 for w in words:
                     if w == pad_word_id or w == eol_word_id:
-                        word_lens.append(0)
+                        word_lens.append(1)
                     else:
                         word_lens.append(len(w))
 
