@@ -33,7 +33,7 @@ if __name__ == '__main__':
         if model_file:
             saver.restore(sess, model_file)
             step = int(model_file.split('/')[-1].split('-')[-1].split('.')[0])
-            logging.info('restored latest step {} from {}/{}'.format(step, FLAGS.train_dir, model_file))
+            logging.info('restored latest step {} from {}'.format(step, model_file))
         else:
             logging.error('Could not restore latest checkpoint from {}, since it is empty'.format(FLAGS.train_dir))
             exit(-1)
