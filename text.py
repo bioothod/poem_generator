@@ -15,7 +15,7 @@ eos_char_id = '\n'
 pad_char_id = '+'
 
 unknown_word_id = '<nkn>'
-eol_word_id = '<l>'
+eol_word_id = '\n'
 pad_word_id = pad_char_id*5
 
 vowels = set([l for l in 'aeiouауеэоаыяию'])
@@ -72,9 +72,7 @@ class Poem(object):
         return random.choice(self.content)
 
     def lines(self):
-        for line in self.content:
-            yield line
-        return None
+        return self.content
 
     def push_encoded_line(self, line, line_len):
         self.encoded_lines.append((line, line_len))
@@ -109,7 +107,7 @@ class Poem(object):
         #logging.info('batches: {}, lens: {}, masks: {}'.format(np.array(batch_words).shape, np.array(batch_lens).shape, np.array(batch_masks).shape))
         return batch_words, batch_lens, batch_masks
 
-    def generate_lm_batches(self, batch_size, word_idx_map):
+    def generate_lm_batches(self, batch_size, word_idx_map, char_idx_map):
         batch_words = []
         batch_lens = []
         batch_chars = []
@@ -123,6 +121,8 @@ class Poem(object):
         unknown_word_enc = word_idx_map[unknown_word_id]
         eol_word_enc = word_idx_map[eol_word_id]
         pad_word_enc = word_idx_map[pad_word_id]
+
+        eos_char_enc = char_idx_map[eos_char_id]
 
         for _ in range(10):
             words, lens, chars, clens, vmasks, history, hlens, x, y = [], [], [], [], [], [], [], [], []
@@ -157,9 +157,7 @@ class Poem(object):
                 history.append(hist)
                 hlens.append(len(hist))
 
-                assert word_line[-1] == eol_word_enc
-
-                x.append(word_line[:-2] + [unknown_word_enc, eol_word_enc])
+                x.append([eol_word_enc] + word_line[:-1])
                 y.append(word_line)
 
             hist_max_len = max(hlens)
@@ -254,8 +252,9 @@ class Poet(object):
         encoded_lines_num = 0
 
         for poem in self.poems:
-            for line in poem.lines():
+            for line in reversed(poem.lines()):
                 words = line.split()
+                words.reverse()
 
                 encoded_line = []
 
@@ -303,14 +302,14 @@ class Poet(object):
         logging.info('{}: poems: {}, pentameter batches: {}'.format(self.poet_id, len(self.poems), len(batch_words)))
         return batch_words, batch_lens, batch_masks
 
-    def generate_language_model_batches(self, batch_size, word_idx_map):
+    def generate_language_model_batches(self, batch_size, word_idx_map, char_idx_map):
         batch_words, batch_lens, batch_history, batch_hlens, batch_x, batch_y = [], [], [], [], [], []
         batch_chars = []
         batch_clens = []
         batch_vmasks = []
 
         for poem in self.poems:
-            w, bl, c, cl, v, h, hl, x, y = poem.generate_lm_batches(batch_size, word_idx_map)
+            w, bl, c, cl, v, h, hl, x, y = poem.generate_lm_batches(batch_size, word_idx_map, char_idx_map)
 
             batch_words += w
             batch_lens += bl

@@ -139,7 +139,7 @@ class Model(object):
         def filter_stop_symbol(word_ids):
             cleaned = set([])
             for w in word_ids:
-                if w not in (stopwords_enc | set([pad_word_enc, eol_word_enc])) and not self.word_idx[w].isalpha():
+                if w not in (stopwords_enc | set([pad_word_enc, unknown_word_enc])):
                     cleaned.add(w)
             return cleaned
 
@@ -174,6 +174,7 @@ class Model(object):
             avoid_words = avoid_words | freq_words | set(sent_enc[-3:] + last_words + avoid_symbols + [unknown_word_enc])
 
             word_enc = self.sample_word(sess, probs[0], np.random.uniform(temp_min, temp_max), rm_target_pos, rm_target_neg, rm_threshold, avoid_words)
+            #logging.info('{} {}'.format(word_enc, self.word_idx[word_enc]))
 
             if word_enc == None:
                 return None, None, None
@@ -543,7 +544,7 @@ class Model(object):
         pm_batch_words, pm_batch_lens, pm_batch_masks = self.poet.generate_pentameter_batches(self.batch_size)
 
         lm_batch_words, lm_batch_lens, lm_batch_chars, lm_batch_clens, lm_batch_vmasks, lm_batch_history, lm_batch_hlens, lm_batch_x, lm_batch_y = \
-            self.poet.generate_language_model_batches(self.batch_size, self.word_idx_map)
+            self.poet.generate_language_model_batches(self.batch_size, self.word_idx_map, self.char_idx_map)
 
         with self.graph.as_default(), tf.Session(graph=self.graph) as sess:
             if cf.save_model or cf.restore_model_step or cf.restore_model_latest:
@@ -720,7 +721,7 @@ class Model(object):
         state, prev_state, x, xchar, xchar_len, sonnet, sent_probs, last_words, total_words, total_lines, rhyme_pttn_pos, rhyme_pttn_neg = reset()
 
         max_words = 400
-        max_lines = 4
+        max_lines = 8
 
         temp_min = 0.6
         temp_max = 0.8
@@ -732,7 +733,7 @@ class Model(object):
         while total_words < max_words and total_lines < max_lines:
 
             #add history context
-            if len(sonnet) == 0 or sonnet.count(eol_word_enc) < 1:
+            if len(sonnet) == 0:
                 hist = [[unknown_word_enc] + [pad_word_enc]*5]
             else:
                 hist = [sonnet + [pad_word_enc]*5]
