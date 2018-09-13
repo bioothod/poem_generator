@@ -195,8 +195,7 @@ class Model(object):
                 if len(sent_enc) == 0:
                     return None, None, None
 
-                pm_loss = 0
-                #pm_loss  = self.eval_pm_loss(sess, sent_enc)
+                pm_loss  = self.eval_pm_loss(sess, sent_enc)
                 return sent_enc, state, pm_loss
 
     def compute_pm_loss(self, is_training, batch_size, enc_hiddens, dec_cell, space_id, pad_id):
@@ -728,7 +727,7 @@ class Model(object):
 
         rm_threshold = 0.9
 
-        sample_sentences = 1
+        sample_sentences = 10
 
         while total_words < max_words and total_lines < max_lines:
 
@@ -795,3 +794,41 @@ class Model(object):
             words.append(word)
 
         logging.info(' '.join(words))
+
+    def eval_pm_loss(self, sess, sent):
+        eol_word_enc = self.word_idx_map[eol_word_id]
+
+        space_char_enc = self.char_idx_map[space_char_id]
+
+        def sent_to_char(words):
+            char_ids = []
+            vmask = []
+
+            for word_enc in reversed(words):
+                if word_enc != eol_word_enc:
+                    word = self.word_idx[word_enc]
+                    chars = word_to_seq(word, self.char_idx_map)
+
+                    char_ids += chars
+                    char_ids.append(space_char_enc)
+
+                    vmask += vowels_mask(word)
+                    vmask.append(0.0) # space
+
+            return char_ids, vmask
+
+        #pentameter check
+        pm_chars, vmask = sent_to_char(sent)
+
+        #create pseudo batch
+        b = ([pm_chars], [len(pm_chars)], [vmask])
+
+        feed_dict = {
+            self.pm_enc_x: [pm_chars],
+            self.pm_enc_xlen: [len(pm_chars)],
+            self.pm_cov_mask: [vmask],
+            self.pm_enc_xlen_max: len(pm_chars),
+        }
+        pm_attns, pm_costs, logits, mius = sess.run([self.pm_attentions, self.pm_costs, self.pm_logits, self.mius], feed_dict=feed_dict)
+
+        return pm_costs[0]
