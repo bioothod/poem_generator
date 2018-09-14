@@ -82,7 +82,9 @@ class Model(object):
         def rhyme_pair_to_char(rhyme_pair):
             char_ids, char_id_len = [], []
 
-            for word in rhyme_pair:
+            for word_enc in rhyme_pair:
+                word = self.word_idx[word_enc]
+
                 ids = word_to_seq(word, self.char_idx_map)
                 padded = pad(ids, self.poet.max_word_len, [pad_char_enc])
 
@@ -174,8 +176,6 @@ class Model(object):
             avoid_words = avoid_words | freq_words | set(sent_enc[-3:] + last_words + avoid_symbols + [unknown_word_enc])
 
             word_enc = self.sample_word(sess, probs[0], np.random.uniform(temp_min, temp_max), rm_target_pos, rm_target_neg, rm_threshold, avoid_words)
-            #logging.info('{} {}'.format(word_enc, self.word_idx[word_enc]))
-
             if word_enc == None:
                 return None, None, None
 
@@ -357,8 +357,8 @@ class Model(object):
         
         #concat word and char encodings
         #logging.info('word_inputs: {}, char_inputs: {}'.format(word_inputs, char_inputs))
-        #inputs = tf.concat([word_inputs, char_inputs], 2)
-        inputs = word_inputs
+        inputs = tf.concat([word_inputs, char_inputs], 2)
+        #inputs = word_inputs
 
         #apply mask to zero out pad embeddings
         inputs = inputs * tf.expand_dims(lm_mask, -1)
